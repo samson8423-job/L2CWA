@@ -62,10 +62,45 @@ def fetch_airbox_data() -> dict:
     """抓取開放空氣盒子 (AirBox) 即時觀測資料"""
     url = "https://pm25.lass-net.org/data/last-all-airbox.json"
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=15)
         if response.status_code == 200:
             return response.json()
     except Exception as e:
         logger.warning(f"抓取空氣盒子開放資料失敗: {e}")
         
     return {}
+
+def fetch_epa_data() -> dict:
+    """抓取開放環保署 (EPA) 測站即時觀測資料"""
+    url = "https://pm25.lass-net.org/data/last-all-epa.json"
+    try:
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        logger.warning(f"抓取環保署開放資料失敗: {e}")
+        
+    return {}
+
+def fetch_cwa_7day_forecast() -> dict:
+    """抓取 CWA 全台各縣市未來 1 週天氣預報 (F-D0047-091)"""
+    load_dotenv()
+    api_key = os.getenv("CWA_API_KEY")
+    if not api_key:
+        return {}
+        
+    url = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-091"
+    headers = {
+        "Authorization": api_key,
+        "accept": "application/json",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=20, verify=False)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        logger.warning(f"抓取 CWA 一週預報失敗: {e}")
+        
+    return {}
+
+

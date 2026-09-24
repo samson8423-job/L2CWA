@@ -78,7 +78,7 @@ def sync_station_forecasts(stations):
 init_db()
 
 st.set_page_config(
-    page_title="CWA 天氣預報網站test",
+    page_title="CWA 天氣預報網站",
     page_icon="☁️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -242,7 +242,7 @@ with st.sidebar:
             </div>
             <div>
                 <div style="color: #25a374; font-size: 13px; font-weight: bold; line-height: 1;">EdiGreen</div>
-                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">CWA 天氣預報網站</div>
+                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">CWA 天氣預報網站test</div>
             </div>
         </div>
     """, unsafe_allow_html=True)

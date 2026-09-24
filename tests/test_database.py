@@ -73,6 +73,53 @@ def test_air_stations_crud(memory_db):
     assert len(hist) == 1
     assert hist[0]["pm25"] == 12.5
 
+def test_unchanged_station_data_is_not_written_again(memory_db):
+    station = {
+        "station_id": "STABLE_001",
+        "name": "穩定測站",
+        "lat": 24.123,
+        "lon": 120.456,
+        "station_type": "空氣盒子觀測點",
+        "pm25": 12.5,
+        "temperature": 28.5,
+        "humidity": 65.0,
+        "status": "active",
+        "updated_at": "2026-09-23 12:00:00",
+        "history": [
+            {"time": "12:00", "pm25": 12.5, "temperature": 28.5, "humidity": 65.0}
+        ],
+    }
+
+    assert database.insert_air_stations([station]) == 1
+    same_reading_new_fetch_time = {
+        **station,
+        "updated_at": "2026-09-23 12:05:00",
+    }
+    assert database.insert_air_stations([same_reading_new_fetch_time]) == 0
+    assert database.get_snapshot_count() == 1
+    assert len(database.get_update_logs()) == 1
+    assert database.get_station_histories(["STABLE_001"])["STABLE_001"][0]["pm25"] == 12.5
+
+def test_changed_station_data_creates_new_snapshot(memory_db):
+    station = {
+        "station_id": "CHANGED_001",
+        "name": "變動測站",
+        "lat": 24.123,
+        "lon": 120.456,
+        "station_type": "空氣盒子觀測點",
+        "pm25": 12.5,
+        "temperature": 28.5,
+        "humidity": 65.0,
+        "status": "active",
+        "updated_at": "2026-09-23 12:00:00",
+    }
+
+    assert database.insert_air_stations([station]) == 1
+    changed_station = {**station, "pm25": 18.0, "updated_at": "2026-09-23 12:05:00"}
+    assert database.insert_air_stations([changed_station]) == 1
+    assert database.get_snapshot_count() == 2
+    assert database.get_air_stations()[0]["pm25"] == 18.0
+
 def test_update_station_regions_and_filter(memory_db):
     database.insert_air_stations([{
         "station_id": "YILAN_001",
@@ -112,6 +159,8 @@ def test_seven_day_forecasts_are_persisted_and_read_by_station(memory_db):
     assert database.has_7day_forecasts() is True
     assert database.get_7day_forecasts("FORECAST_001")[0]["humidity"] == 72.0
     assert database.get_7day_forecasts("OTHER_STATION") == []
+
+    assert database.insert_7day_forecasts([forecast]) == 0
 
 def test_find_stations_needing_seven_day_forecasts(memory_db):
     stations = [

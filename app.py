@@ -20,6 +20,7 @@ _required_database_functions = (
     "insert_air_stations",
     "get_air_stations",
     "get_station_history",
+    "get_station_histories",
     "update_station_regions",
     "insert_7day_forecasts",
     "get_7day_forecasts",
@@ -33,6 +34,7 @@ from database import (
     insert_air_stations,
     get_air_stations,
     get_station_history,
+    get_station_histories,
     update_station_regions,
     insert_7day_forecasts,
     get_7day_forecasts,
@@ -74,6 +76,18 @@ def sync_station_forecasts(stations):
                 )
         forecast_rows.extend(station_forecasts)
     return insert_7day_forecasts(forecast_rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_station_histories(station_ids):
+    """短暫快取只讀歷史資料，地圖互動 rerun 不重複查詢資料庫。"""
+    return get_station_histories(list(station_ids))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_station_forecasts(station_id):
+    """短暫快取單一站點的七日預報，只從資料庫讀取。"""
+    return get_7day_forecasts(station_id)
 
 # 初始化 SQLite 資料庫
 init_db()
@@ -184,9 +198,11 @@ loading_overlay = st.empty()
 if is_initial_page_load:
     loading_overlay.status("頁面載入中，正在準備站點資料與地圖…", expanded=True)
 
-# 檢查資料庫是否有測站，若無或少於 150 站則自動同步抓取
+# 資料庫不足時僅於此 session 的首次載入嘗試初始化，避免每次互動 rerun 都呼叫 API。
 existing_stations = get_air_stations(include_offline=True)
-if not existing_stations or len(existing_stations) < 150:
+station_bootstrap_key = "_station_bootstrap_attempted"
+if (not existing_stations or len(existing_stations) < 150) and not st.session_state.get(station_bootstrap_key):
+    st.session_state[station_bootstrap_key] = True
     try:
         with st.spinner("正在初始化資料，下載全台空氣品質觀測資料…", show_time=True):
             air_raw = fetch_airbox_data()
@@ -283,6 +299,9 @@ with st.sidebar:
                 forecast_count = sync_station_forecasts(
                     get_air_stations(include_offline=True)
                 )
+                load_station_histories.clear()
+                load_station_forecasts.clear()
+                create_popup_html.clear()
                 st.success(
                     f"成功更新 {count} 個測站即時資訊，並寫入 {forecast_count} 筆七日預報資料。"
                 )
@@ -311,6 +330,9 @@ stations = get_air_stations(
     region=selected_region, 
     include_offline=show_offline
 )
+station_histories = load_station_histories(
+    tuple(str(station['station_id']) for station in stations)
+)
 
 # 依 PM2.5 決定標籤顏色 (完美還原 EdiGreen 六級色階)
 def get_pm25_color(val):
@@ -328,6 +350,7 @@ def get_pm25_color(val):
         return "#7E0023"  # 褐紅色 >251
 
 # 建立 HTML/SVG 時序趨勢圖表，精準還原圖片中的 Popup 視窗
+@st.cache_data(ttl=300, show_spinner=False)
 def create_popup_html(stn, history):
     pm25 = stn.get('pm25', 0.0)
     temp = stn.get('temperature', 0.0)
@@ -336,7 +359,6 @@ def create_popup_html(stn, history):
     lat = stn.get('lat', 0.0)
     lon = stn.get('lon', 0.0)
     updated = stn.get('updated_at', '')
-    
     # 提取時序數據（若無時序則自動生成）
     if not history:
         history = generate_24h_history(pm25, temp, hum, is_aaa2=(stn.get('station_id') == 'AAA2'))
@@ -510,9 +532,10 @@ m = folium.Map(
 folium.TileLayer(
     tiles=tile_url,
     attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    name='CartoDB Positron',
+    name='Light',
     subdomains='abcd',
-    max_zoom=19
+    max_zoom=19,
+    control=False,
 ).add_to(m)
 
 # streamlit-folium 的地圖顯示在 iframe 中；主頁面的 Streamlit CSS 無法套用進去。
@@ -551,7 +574,7 @@ for stn in stations:
     if stype in type_counts:
         type_counts[stype] += 1
         
-    history = get_station_history(stn['station_id'])
+    history = station_histories.get(str(stn['station_id']), [])
     
     # 彈出視窗
     popup_content = create_popup_html(stn, history)
@@ -839,7 +862,7 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
         col_m3.metric("即時溫度", f"{selected_stn['temperature']:.2f} °C")
         col_m4.metric("相對濕度", f"{selected_stn['humidity']:.0f} %")
         
-        hist = get_station_history(selected_stn['station_id'])
+        hist = station_histories.get(str(selected_stn['station_id']), [])
         if hist:
             df_hist = pd.DataFrame(hist)
             t_col = 'time' if 'time' in df_hist.columns else 'record_time'
@@ -854,7 +877,7 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
                 st.area_chart(df_hist.set_index('hour')[['temperature', 'humidity']])
 
         st.markdown("#### 未來 7 日天氣預報")
-        forecasts = get_7day_forecasts(selected_stn['station_id'])
+        forecasts = load_station_forecasts(str(selected_stn['station_id']))
         if forecasts:
             forecast_df = pd.DataFrame(forecasts).rename(columns={
                 'forecast_date': '日期',

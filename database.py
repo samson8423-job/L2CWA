@@ -125,26 +125,17 @@ def init_db():
             conn.close()
 
 def insert_air_stations(stations: list[dict]):
-    """新增或更新空氣盒子測站資料，並完整記錄此批次之即時快照日誌"""
+    """僅新增或更新有變化的測站，並為變更資料記錄快照。"""
     if not stations:
         return 0
-        
-    inserted = 0
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    batch_id = datetime.now().strftime("BATCH_%Y%m%d_%H%M%S")
-    
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
-        # 1. 寫入本次更新批次日誌
-        cursor.execute('''
-            INSERT INTO UpdateLogs (batch_id, update_time, station_count, note)
-            VALUES (?, ?, ?, ?)
-        ''', (batch_id, now_str, len(stations), f"成功同步 {len(stations)} 個測站"))
-        
-        # 2. 逐站寫入快照歷程與即時測站狀態
+
+        changed_stations = []
         for s in stations:
             sid = str(s['station_id'])
             sname = str(s['name'])
@@ -157,17 +148,40 @@ def insert_air_stations(stations: list[dict]):
             hum = float(s['humidity'])
             status = str(s.get('status', 'active'))
             up_at = str(s.get('updated_at', now_str))
-            
-            # (A) 寫入不可覆蓋之歷史快照 (AirStationSnapshots)
+
+            cursor.execute('''
+                SELECT name, lat, lon, region, station_type, pm25,
+                       temperature, humidity, status
+                FROM AirStations WHERE station_id = ?
+            ''', (sid,))
+            previous = cursor.fetchone()
+            current = (sname, lat, lon, region, stype, pm25, temp, hum, status)
+            if previous == current:
+                continue
+            changed_stations.append((s, sid, sname, lat, lon, region, stype,
+                                     pm25, temp, hum, status, up_at))
+
+        if not changed_stations:
+            conn.commit()
+            return 0
+
+        batch_id = datetime.now().strftime("BATCH_%Y%m%d_%H%M%S_%f")
+        cursor.execute('''
+            INSERT INTO UpdateLogs (batch_id, update_time, station_count, note)
+            VALUES (?, ?, ?, ?)
+        ''', (batch_id, now_str, len(changed_stations),
+              f"新增或更新 {len(changed_stations)} 個有變化的測站"))
+
+        for (s, sid, sname, lat, lon, region, stype,
+             pm25, temp, hum, status, up_at) in changed_stations:
             cursor.execute('''
                 INSERT INTO AirStationSnapshots (
-                    batch_id, station_id, name, lat, lon, region, station_type, 
+                    batch_id, station_id, name, lat, lon, region, station_type,
                     pm25, temperature, humidity, status, updated_at, recorded_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (batch_id, sid, sname, lat, lon, region, stype, pm25, temp, hum, status, up_at, now_str))
-            
-            # (B) 更新即時現狀表 (AirStations)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (batch_id, sid, sname, lat, lon, region, stype,
+                  pm25, temp, hum, status, up_at, now_str))
+
             cursor.execute('''
                 INSERT INTO AirStations (
                     station_id, name, lat, lon, region, station_type, 
@@ -186,8 +200,7 @@ def insert_air_stations(stations: list[dict]):
                     status = excluded.status,
                     updated_at = excluded.updated_at
             ''', (sid, sname, lat, lon, region, stype, pm25, temp, hum, status, up_at))
-            
-            # (C) 儲存 24 小時歷史時序
+
             history = s.get('history', [])
             for h in history:
                 r_time = h.get('time') or h.get('record_time') or '00:00'
@@ -198,10 +211,11 @@ def insert_air_stations(stations: list[dict]):
                         pm25 = excluded.pm25,
                         temperature = excluded.temperature,
                         humidity = excluded.humidity
+                    WHERE StationHistory.pm25 != excluded.pm25
+                       OR StationHistory.temperature != excluded.temperature
+                       OR StationHistory.humidity != excluded.humidity
                 ''', (sid, r_time, float(h['pm25']), float(h['temperature']), float(h['humidity'])))
-                
-            inserted += 1
-            
+
         conn.commit()
     except sqlite3.Error as e:
         logger.error(f"更新站點資料時發生錯誤: {e}")
@@ -210,7 +224,7 @@ def insert_air_stations(stations: list[dict]):
         if conn:
             conn.close()
             
-    return inserted
+    return len(changed_stations)
 
 def get_air_stations(station_type=None, region=None, include_offline=False):
     """查詢測站列表，支援站點類型與分區（北部、中部、南部、東部、東北、東南、外島）篩選"""
@@ -291,6 +305,36 @@ def get_station_history(station_id):
         if conn:
             conn.close()
 
+def get_station_histories(station_ids: list[str]):
+    """一次查詢多個站點的歷史資料，避免逐站建立資料庫連線。"""
+    if not station_ids:
+        return {}
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        placeholders = ",".join("?" for _ in station_ids)
+        cursor.execute(f'''
+            SELECT station_id, record_time, record_time AS time,
+                   pm25, temperature, humidity
+            FROM StationHistory
+            WHERE station_id IN ({placeholders})
+            ORDER BY station_id, record_time ASC
+        ''', station_ids)
+        histories = {str(station_id): [] for station_id in station_ids}
+        for row in cursor.fetchall():
+            record = dict(row)
+            histories[record["station_id"]].append(record)
+        return histories
+    except sqlite3.Error as e:
+        logger.error(f"批次查詢站點時序失敗: {e}")
+        return {str(station_id): [] for station_id in station_ids}
+    finally:
+        if conn:
+            conn.close()
+
 def insert_7day_forecasts(forecasts: list[dict]):
     """儲存或更新未來 7 天天氣預報"""
     if not forecasts:
@@ -316,12 +360,19 @@ def insert_7day_forecasts(forecasts: list[dict]):
                     pop = excluded.pop,
                     description = excluded.description,
                     updated_at = excluded.updated_at
+                    WHERE SevenDayForecasts.weekday != excluded.weekday
+                       OR SevenDayForecasts.weather != excluded.weather
+                       OR SevenDayForecasts.min_temp != excluded.min_temp
+                       OR SevenDayForecasts.max_temp != excluded.max_temp
+                       OR SevenDayForecasts.humidity != excluded.humidity
+                       OR SevenDayForecasts.pop != excluded.pop
+                       OR COALESCE(SevenDayForecasts.description, '') != COALESCE(excluded.description, '')
             ''', (
                 f['station_id'], f['forecast_date'], f['weekday'], f['weather'],
                 f['min_temp'], f['max_temp'], f['humidity'], f['pop'],
                 f.get('description', ''), f.get('updated_at', '')
             ))
-            inserted += 1
+            inserted += cursor.rowcount
         conn.commit()
     except sqlite3.Error as e:
         logger.error(f"儲存一週預報失敗: {e}")

@@ -4,7 +4,7 @@
 
 ![Sheng Wang 天氣預報網站](image/result.png)
 
-## 🚀 試用連結
+## 試用連結
 
 **[在線 Demo](https://asheng-cwa.streamlit.app/)**
 

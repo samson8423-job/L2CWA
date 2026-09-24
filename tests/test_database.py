@@ -2,6 +2,7 @@ import pytest
 import sqlite3
 import os
 import tempfile
+from datetime import date, timedelta
 import database
 
 @pytest.fixture
@@ -71,4 +72,76 @@ def test_air_stations_crud(memory_db):
     hist = database.get_station_history("TEST_001")
     assert len(hist) == 1
     assert hist[0]["pm25"] == 12.5
+
+def test_update_station_regions_and_filter(memory_db):
+    database.insert_air_stations([{
+        "station_id": "YILAN_001",
+        "name": "宜蘭測站",
+        "lat": 24.75,
+        "lon": 121.75,
+        "region": "東部地區",
+        "station_type": "空氣盒子觀測點",
+        "pm25": 12.5,
+        "temperature": 28.5,
+        "humidity": 65.0,
+        "status": "active",
+        "updated_at": "2026-09-23 12:00:00",
+    }])
+
+    database.update_station_regions([("YILAN_001", "東北部地區")])
+
+    assert len(database.get_air_stations(region="東北部地區")) == 1
+    assert database.get_air_stations(region="東部地區") == []
+
+def test_seven_day_forecasts_are_persisted_and_read_by_station(memory_db):
+    forecast = {
+        "station_id": "FORECAST_001",
+        "forecast_date": "2026-09-24",
+        "weekday": "(四)",
+        "weather": "⛅ 多雲",
+        "min_temp": 24.0,
+        "max_temp": 30.0,
+        "humidity": 72.0,
+        "pop": 30,
+        "description": "多雲時晴",
+        "updated_at": "2026-09-24 08:00:00",
+    }
+
+    assert database.has_7day_forecasts() is False
+    assert database.insert_7day_forecasts([forecast]) == 1
+    assert database.has_7day_forecasts() is True
+    assert database.get_7day_forecasts("FORECAST_001")[0]["humidity"] == 72.0
+    assert database.get_7day_forecasts("OTHER_STATION") == []
+
+def test_find_stations_needing_seven_day_forecasts(memory_db):
+    stations = [
+        {
+            "station_id": station_id,
+            "name": station_id,
+            "lat": 24.0,
+            "lon": 121.0,
+            "region": "東部地區",
+            "station_type": "空氣盒子觀測點",
+            "pm25": 10.0,
+            "temperature": 25.0,
+            "humidity": 60.0,
+            "status": "active",
+            "updated_at": "2026-09-24 08:00:00",
+        }
+        for station_id in ("CACHED", "MISSING")
+    ]
+    database.insert_air_stations(stations)
+    database.insert_7day_forecasts([{
+        "station_id": "CACHED",
+        "forecast_date": (date.today() + timedelta(days=offset)).isoformat(),
+        "weekday": "(四)",
+        "weather": "⛅ 多雲",
+        "min_temp": 24.0,
+        "max_temp": 30.0,
+        "humidity": 72.0,
+        "pop": 30,
+        "updated_at": "2026-09-24 08:00:00",
+    } for offset in range(7)])
+
+    assert database.get_station_ids_needing_7day_forecasts(["CACHED", "MISSING"]) == ["MISSING"]
 

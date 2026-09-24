@@ -6,20 +6,79 @@ import logging
 from datetime import datetime
 import math
 import os
+import importlib
 from dotenv import load_dotenv
 
-from fetch_weather import fetch_airbox_data, fetch_epa_data, fetch_weather_data
-from parse_weather import parse_airbox_data, parse_weather_data, generate_24h_history
-from database import init_db, insert_air_stations, get_air_stations, get_station_history
+from fetch_weather import fetch_airbox_data, fetch_epa_data, fetch_weather_data, fetch_cwa_7day_forecast
+from parse_weather import parse_airbox_data, parse_weather_data, generate_24h_history, get_station_region, parse_cwa_7day_forecast
+
+import database as database_module
+
+_required_database_functions = (
+    "init_db",
+    "insert_air_stations",
+    "get_air_stations",
+    "get_station_history",
+    "update_station_regions",
+    "insert_7day_forecasts",
+    "get_7day_forecasts",
+    "get_station_ids_needing_7day_forecasts",
+)
+if any(not hasattr(database_module, name) for name in _required_database_functions):
+    database_module = importlib.reload(database_module)
+
+from database import (
+    init_db,
+    insert_air_stations,
+    get_air_stations,
+    get_station_history,
+    update_station_regions,
+    insert_7day_forecasts,
+    get_7day_forecasts,
+    get_station_ids_needing_7day_forecasts,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+FORECAST_REGION_KEYWORDS = {
+    '北部地區': '臺北市',
+    '中部地區': '臺中市',
+    '南部地區': '高雄市',
+    '東北部地區': '宜蘭縣',
+    '東部地區': '花蓮縣',
+    '東南部地區': '臺東縣',
+    '外島地區': '澎湖縣',
+}
+
+
+def sync_station_forecasts(stations):
+    """抓取並將測站未來七日預報寫入資料庫；UI 選站時只讀資料庫。"""
+    cwa_forecast = fetch_cwa_7day_forecast()
+    forecast_rows = []
+    for station in stations:
+        station_id = str(station['station_id'])
+        station_forecasts = parse_cwa_7day_forecast(
+            cwa_forecast,
+            station_id,
+            str(station.get('name', '')),
+        )
+        if not station_forecasts:
+            fallback_keyword = FORECAST_REGION_KEYWORDS.get(station.get('region'), '')
+            if fallback_keyword:
+                station_forecasts = parse_cwa_7day_forecast(
+                    cwa_forecast,
+                    station_id,
+                    fallback_keyword,
+                )
+        forecast_rows.extend(station_forecasts)
+    return insert_7day_forecasts(forecast_rows)
 
 # 初始化 SQLite 資料庫
 init_db()
 
 st.set_page_config(
-    page_title="EdiGreen 空氣盒子 | 台灣微型氣象與空氣品質監測",
+    page_title="CWA 天氣預報網站",
     page_icon="☁️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -97,21 +156,86 @@ st.markdown("""
         flex-direction: column;
         gap: 6px;
     }
+
+    /* 首次載入期間固定顯示遮罩，直到地圖與下方資料都完成渲染 */
+    div[data-testid="stStatusWidget"] {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 99999 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 100vw !important;
+        height: 100vh !important;
+        background: rgba(15, 23, 42, 0.62) !important;
+        backdrop-filter: blur(3px);
+        box-sizing: border-box !important;
+    }
+
+    div[data-testid="stStatusWidget"] > details {
+        padding: 28px 36px !important;
+        border-radius: 14px !important;
+        background: #fff !important;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.24) !important;
+        color: #2c3e50 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# 遮罩放在資料讀取與地圖建立之前，首次執行完成後才移除。
+is_initial_page_load = not st.session_state.get("_initial_page_loaded", False)
+loading_overlay = st.empty()
+if is_initial_page_load:
+    loading_overlay.status("頁面載入中，正在準備站點資料與地圖…", expanded=True)
 
 # 檢查資料庫是否有測站，若無或少於 150 站則自動同步抓取
 existing_stations = get_air_stations(include_offline=True)
 if not existing_stations or len(existing_stations) < 150:
-    with st.spinner("正在初始化全台微型氣象與空氣盒子觀測網資料..."):
-        try:
+    try:
+        with st.spinner("正在初始化資料，下載全台空氣品質觀測資料…", show_time=True):
             air_raw = fetch_airbox_data()
             epa_raw = fetch_epa_data()
             parsed = parse_airbox_data(air_raw, epa_raw)
             insert_air_stations(parsed)
             existing_stations = get_air_stations(include_offline=True)
+    except Exception as e:
+        st.error(f"初始資料取得失敗: {e}")
+        logger.error(f"初始資料取得失敗: {e}")
+
+# 每次啟動時修正舊版快取站點的分區，東北／東南不必等手動同步才出現。
+if existing_stations:
+    station_regions = [
+        (
+            str(station['station_id']),
+            get_station_region(station.get('name', ''), station.get('lat', 0), station.get('lon', 0)),
+        )
+        for station in existing_stations
+    ]
+    update_station_regions(station_regions)
+    existing_stations = get_air_stations(include_offline=True)
+
+    # 快取缺資料時每個 session 僅自動同步一次；正常選站只讀 DB，不觸發 API。
+    missing_forecast_ids = set(get_station_ids_needing_7day_forecasts(
+        [str(station['station_id']) for station in existing_stations]
+    ))
+    forecast_bootstrap_key = "_forecast_bootstrap_attempted_date"
+    today_key = datetime.now().date().isoformat()
+    if missing_forecast_ids and st.session_state.get(forecast_bootstrap_key) != today_key:
+        st.session_state[forecast_bootstrap_key] = today_key
+        try:
+            stations_to_sync = [
+                station for station in existing_stations
+                if str(station['station_id']) in missing_forecast_ids
+            ]
+            forecast_count = sync_station_forecasts(stations_to_sync)
+            if forecast_count == 0:
+                st.warning(
+                    "初次載入未取得七日預報資料。請確認 CWA API Key 與 API 回應；"
+                    "資料不會在每次切換站點時重抓。"
+                )
         except Exception as e:
-            logger.error(f"初始資料取得失敗: {e}")
+            logger.error(f"初始七日預報同步失敗: {e}")
+            st.warning(f"初次載入七日預報同步失敗：{e}")
 
 # ==================== 側邊欄 (Sidebar) ====================
 with st.sidebar:
@@ -123,7 +247,7 @@ with st.sidebar:
             </div>
             <div>
                 <div style="color: #25a374; font-size: 13px; font-weight: bold; line-height: 1;">EdiGreen</div>
-                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">空氣盒子</div>
+                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">CWA 天氣預報網站</div>
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -139,10 +263,10 @@ with st.sidebar:
         st.markdown('<div class="filter-label">偵測站點 ⓘ</div>', unsafe_allow_html=True)
         station_filter_mode = st.radio("站點模式", ["Station", "ADF"], horizontal=True, label_visibility="collapsed")
         
-        st.markdown('<div class="filter-label">站點類別篩選</div>', unsafe_allow_html=True)
+        st.markdown('<div class="filter-label">地區選擇 ⓘ</div>', unsafe_allow_html=True)
         station_type_filter = st.selectbox(
-            "站點類別", 
-            ["All", "空氣盒子觀測點", "環保署觀測站", "開放資料觀測站", "資料異於周圍環境", "機器需檢修"],
+            "地區", 
+            ["全台", "北部", "中部", "南部", "東部", "東北", "東南", "外島"],
             label_visibility="collapsed"
         )
         
@@ -160,14 +284,35 @@ with st.sidebar:
                 epa_raw = fetch_epa_data()
                 parsed = parse_airbox_data(air_raw, epa_raw)
                 count = insert_air_stations(parsed)
-                st.success(f"成功更新 {count} 個測站即時資訊！")
+                forecast_count = sync_station_forecasts(
+                    get_air_stations(include_offline=True)
+                )
+                st.success(
+                    f"成功更新 {count} 個測站即時資訊，並寫入 {forecast_count} 筆七日預報資料。"
+                )
+                if forecast_count == 0:
+                    st.warning("七日預報未取得資料，請確認 CWA_API_KEY 與預報 API 狀態。")
                 st.rerun()
             except Exception as e:
                 st.error(f"更新失敗: {e}")
 
 # ==================== 主地圖繪製與資料整合 ====================
+# 地區篩選映射：用戶輸入 -> 數據庫地區值
+region_mapping = {
+    "全台": None,  # 全部地區
+    "北部": "北部地區",
+    "中部": "中部地區",
+    "南部": "南部地區",
+    "東部": "東部地區",
+    "東北": "東北部地區",
+    "東南": "東南部地區",
+    "外島": "外島地區"
+}
+
+selected_region = region_mapping.get(station_type_filter)
+
 stations = get_air_stations(
-    station_type=station_type_filter, 
+    region=selected_region, 
     include_offline=show_offline
 )
 
@@ -562,8 +707,49 @@ if show_wind:
         
     wind_group.add_to(m)
 
-# 顯示滿版台灣地圖
-st_folium(m, width="100%", height=660, returned_objects=["last_clicked"])
+# 顯示滿版台灣地圖；點擊測站標記時，回傳標記座標與 tooltip。
+map_result = st_folium(
+    m,
+    width="100%",
+    height=660,
+    key="station_map",
+    returned_objects=[
+        "last_object_clicked",
+        "last_object_clicked_count",
+        "last_object_clicked_tooltip",
+    ],
+)
+
+last_click_count = map_result.get("last_object_clicked_count")
+last_clicked = map_result.get("last_object_clicked")
+if (
+    last_click_count is not None
+    and last_click_count != st.session_state.get("_last_station_map_click_count")
+):
+    st.session_state["_last_station_map_click_count"] = last_click_count
+    if last_clicked and stations:
+        clicked_lat = last_clicked.get("lat")
+        clicked_lon = last_clicked.get("lng", last_clicked.get("lon"))
+        if clicked_lat is not None and clicked_lon is not None:
+            def get_coordinate_error(station):
+                return (
+                    (float(station["lat"]) - float(clicked_lat)) ** 2
+                    + (float(station["lon"]) - float(clicked_lon)) ** 2
+                ) ** 0.5
+
+            nearest_error = min(get_coordinate_error(station) for station in stations)
+            tooltip_text = str(map_result.get("last_object_clicked_tooltip") or "")
+            nearest_candidates = [
+                station for station in stations
+                if get_coordinate_error(station) <= nearest_error + 1e-8
+            ]
+            nearest_station = next(
+                (station for station in nearest_candidates if station["name"] in tooltip_text),
+                nearest_candidates[0],
+            )
+            coordinate_error = get_coordinate_error(nearest_station)
+            if coordinate_error <= 0.002:
+                st.session_state["_selected_station_id"] = str(nearest_station["station_id"])
 
 # 地圖底部雙側圖例列（左下角 PM2.5 色階、右下角站點類別圖例）
 col_leg_left, col_leg_right = st.columns([1.1, 1.2])
@@ -619,12 +805,15 @@ with col_leg_right:
     """, unsafe_allow_html=True)
 
 # 站點快速檢視展開面板
-with st.expander("📊 點擊展開站點即時詳細指標與 24 小時時序圖表", expanded=False):
-    stn_options = [s['name'] for s in stations]
-    selected_name = st.selectbox("選取站點詳細檢視", stn_options, index=0 if stn_options else None)
-    
-    selected_stn = next((s for s in stations if s['name'] == selected_name), None)
+with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日天氣", expanded=True):
+    selected_station_id = st.session_state.get("_selected_station_id")
+    selected_stn = next(
+        (station for station in stations if str(station["station_id"]) == selected_station_id),
+        stations[0] if stations else None,
+    )
     if selected_stn:
+        st.session_state["_selected_station_id"] = str(selected_stn["station_id"])
+        st.caption("點擊地圖上的站點標記，即可切換此處顯示的站點資料。")
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         col_m1.metric("站點名稱", selected_stn['name'], selected_stn.get('station_type', '觀測點'))
         col_m2.metric("PM2.5 濃度", f"{selected_stn['pm25']} µg/m³")
@@ -644,5 +833,39 @@ with st.expander("📊 點擊展開站點即時詳細指標與 24 小時時序�
             with c_ch2:
                 st.markdown("**溫度 (°C) 與 濕度 (%) 時序**")
                 st.area_chart(df_hist.set_index('hour')[['temperature', 'humidity']])
+
+        st.markdown("#### 未來 7 日天氣預報")
+        forecasts = get_7day_forecasts(selected_stn['station_id'])
+        if forecasts:
+            forecast_df = pd.DataFrame(forecasts).rename(columns={
+                'forecast_date': '日期',
+                'weekday': '星期',
+                'weather': '天氣',
+                'min_temp': '最低溫 (°C)',
+                'max_temp': '最高溫 (°C)',
+                'humidity': '相對濕度 (%)',
+                'pop': '降雨機率 (%)',
+                'description': '天氣描述',
+            })
+            for column in ['最低溫 (°C)', '最高溫 (°C)']:
+                forecast_df[column] = forecast_df[column].replace(-999, '—')
+            for column in ['相對濕度 (%)', '降雨機率 (%)']:
+                forecast_df[column] = forecast_df[column].replace(-1, '—')
+            st.dataframe(
+                forecast_df[[
+                    '日期', '星期', '天氣', '最低溫 (°C)', '最高溫 (°C)',
+                    '相對濕度 (%)', '降雨機率 (%)', '天氣描述',
+                ]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("資料庫目前沒有此站點的七日預報，請按側邊欄「更新即時監測資料」同步。")
                 
         st.caption(f"座標: `{selected_stn['lat']:.3f}°N / {selected_stn['lon']:.3f}°E` ｜ 最後更新時間: {selected_stn['updated_at']}")
+    else:
+        st.info("目前篩選條件沒有可顯示的測站。")
+
+if is_initial_page_load:
+    loading_overlay.empty()
+    st.session_state["_initial_page_loaded"] = True

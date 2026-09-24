@@ -146,7 +146,7 @@ def generate_24h_history(current_pm25, current_temp, current_humidity, is_aaa2=F
     return history
 
 def get_station_region(name: str, lat: float, lon: float) -> str:
-    """判斷測站所屬區域：北部地區、中部地區、南部地區、東部地區、外島地區"""
+    """判斷測站所屬區域：北部地區、中部地區、南部地區、東北部地區、東部地區、東南部地區、外島地區"""
     name_str = str(name)
     if any(k in name_str for k in ['基隆', '臺北', '台北', '新北', '桃園', '新竹', '苗栗', '淡水', '三峽', '板橋', '士林', '信義']):
         return '北部地區'
@@ -154,16 +154,25 @@ def get_station_region(name: str, lat: float, lon: float) -> str:
         return '中部地區'
     elif any(k in name_str for k in ['嘉義', '臺南', '台南', '高雄', '屏東', '恆春', '左營', '小港', '新營', '安平', '墾丁', '鵝鑾鼻']):
         return '南部地區'
-    elif any(k in name_str for k in ['宜蘭', '花蓮', '臺東', '台東', '羅東', '太魯閣', '七星潭', '關山', '池上', '知本']):
+    elif any(k in name_str for k in ['宜蘭', '羅東', '蘇澳']):
+        return '東北部地區'
+    elif any(k in name_str for k in ['花蓮', '太魯閣', '七星潭', '光復']):
         return '東部地區'
+    elif any(k in name_str for k in ['臺東', '台東', '關山', '池上', '知本']):
+        return '東南部地區'
     elif any(k in name_str for k in ['澎湖', '金門', '連江', '馬祖', '馬公']):
         return '外島地區'
     
     # 經緯度座標判斷
-    if lon < 120.0 or lat > 26.0:
+    if lon < 120.0 or (lat > 26.0 and lon > 121.5):
         return '外島地區'
-    if lon >= 121.2 and 22.0 <= lat <= 24.8:
+    # 東岸依緯度由北往南拆分；要先判斷東南，避免被較寬的東部範圍攔截。
+    if lon >= 121.0 and lat < 23.5:
+        return '東南部地區'
+    if lon >= 121.0 and lat < 24.4:
         return '東部地區'
+    if lon >= 121.0 and lat >= 24.4:
+        return '東北部地區'
     if lat >= 24.4:
         return '北部地區'
     if 23.5 <= lat < 24.4:
@@ -559,21 +568,62 @@ def parse_cwa_7day_forecast(cwa_raw: dict, target_station_id: str, location_keyw
     """解析 CWA F-D0047-091 全台 7 天氣象預報"""
     if not cwa_raw or "records" not in cwa_raw:
         return []
+
+    def parse_number(value):
+        if value in (None, "", " ", "-"):
+            return None
+        try:
+            number = float(value)
+            return number if math.isfinite(number) else None
+        except (TypeError, ValueError):
+            return None
+
+    def get_date(item):
+        start_time = str(item.get("StartTime") or "")
+        date_value = start_time[:10]
+        try:
+            datetime.strptime(date_value, "%Y-%m-%d")
+            return date_value
+        except ValueError:
+            return None
+
+    def get_element_value(item):
+        values = item.get("ElementValue") or []
+        if isinstance(values, dict):
+            return values
+        return values[0] if values and isinstance(values[0], dict) else {}
     
     try:
         locations_data = cwa_raw.get("records", {}).get("Locations", [])
         if not locations_data:
             return []
-        loc_list = locations_data[0].get("Location", [])
-        
+
+        all_locations = []
+        for location_group in locations_data:
+            group_name = location_group.get("LocationsName", "")
+            all_locations.extend(
+                (loc, group_name)
+                for loc in location_group.get("Location", [])
+            )
+
         matched_loc = None
-        for loc in loc_list:
-            loc_name = loc.get("LocationName", "")
-            if location_keyword and (location_keyword in loc_name or loc_name in location_keyword):
-                matched_loc = loc
-                break
-        if not matched_loc and loc_list:
-            matched_loc = loc_list[0]
+        if location_keyword:
+            for loc, _ in all_locations:
+                loc_name = loc.get("LocationName", "")
+                if location_keyword in loc_name or loc_name in location_keyword:
+                    matched_loc = loc
+                    break
+
+            # 若只提供縣市名稱，使用該縣市群組的第一個鄉鎮預報作為站點代表值。
+            if not matched_loc:
+                for loc, group_name in all_locations:
+                    if group_name and (
+                        location_keyword in group_name or group_name in location_keyword
+                    ):
+                        matched_loc = loc
+                        break
+        elif all_locations:
+            matched_loc = all_locations[0][0]
             
         if not matched_loc:
             return []
@@ -593,44 +643,57 @@ def parse_cwa_7day_forecast(cwa_raw: dict, target_station_id: str, location_keyw
         hum_list = elements.get("平均相對濕度", []) or elements.get("相對濕度", [])
         
         for item in max_t_list:
-            s_time = item.get("StartTime", "")
-            d_str = s_time.split(" ")[0] if s_time else ""
-            if not d_str: continue
+            d_str = get_date(item)
+            if not d_str:
+                continue
             if d_str not in forecast_days:
-                forecast_days[d_str] = {"date": d_str, "max": 30.0, "min": 24.0, "weather": "☀️ 晴時多雲", "pop": 20, "desc": "多雲到晴", "hum": 60}
-            val = item.get("ElementValue", [{}])[0].get("MaxTemperature")
-            if val: forecast_days[d_str]["max"] = float(val)
+                forecast_days[d_str] = {"date": d_str, "max": -999.0, "min": -999.0, "weather": "☀️ 晴時多雲", "pop": -1, "desc": "多雲到晴", "hum": -1.0}
+            val = parse_number(get_element_value(item).get("MaxTemperature"))
+            if val is not None:
+                current_max = forecast_days[d_str]["max"]
+                forecast_days[d_str]["max"] = max(current_max, val) if current_max != -999.0 else val
             
         for item in min_t_list:
-            s_time = item.get("StartTime", "")
-            d_str = s_time.split(" ")[0] if s_time else ""
+            d_str = get_date(item)
             if d_str in forecast_days:
-                val = item.get("ElementValue", [{}])[0].get("MinTemperature")
-                if val: forecast_days[d_str]["min"] = float(val)
+                val = parse_number(get_element_value(item).get("MinTemperature"))
+                if val is not None:
+                    current_min = forecast_days[d_str]["min"]
+                    forecast_days[d_str]["min"] = min(current_min, val) if current_min != -999.0 else val
                 
         for item in wx_list:
-            s_time = item.get("StartTime", "")
-            d_str = s_time.split(" ")[0] if s_time else ""
+            d_str = get_date(item)
             if d_str in forecast_days:
-                val = item.get("ElementValue", [{}])[0].get("Weather")
+                val = get_element_value(item).get("Weather")
                 if val:
                     icon = "☀️ " if "晴" in val else ("🌧️ " if "雨" in val else "⛅ ")
                     forecast_days[d_str]["weather"] = f"{icon}{val}"
                     
         for item in pop_list:
-            s_time = item.get("StartTime", "")
-            d_str = s_time.split(" ")[0] if s_time else ""
+            d_str = get_date(item)
             if d_str in forecast_days:
-                val = item.get("ElementValue", [{}])[0].get("ProbabilityOfPrecipitation")
-                if val and val != " ":
-                    forecast_days[d_str]["pop"] = int(val)
+                val = parse_number(get_element_value(item).get("ProbabilityOfPrecipitation"))
+                if val is not None:
+                    current_pop = forecast_days[d_str]["pop"]
+                    forecast_days[d_str]["pop"] = max(current_pop, int(round(val))) if current_pop >= 0 else int(round(val))
                     
         for item in desc_list:
-            s_time = item.get("StartTime", "")
-            d_str = s_time.split(" ")[0] if s_time else ""
+            d_str = get_date(item)
             if d_str in forecast_days:
-                val = item.get("ElementValue", [{}])[0].get("WeatherDescription")
+                val = get_element_value(item).get("WeatherDescription")
                 if val: forecast_days[d_str]["desc"] = val
+
+        for item in hum_list:
+            d_str = get_date(item)
+            if d_str in forecast_days:
+                element_value = get_element_value(item)
+                val = (
+                    element_value.get("RelativeHumidity")
+                    or element_value.get("AverageRelativeHumidity")
+                )
+                val = parse_number(val)
+                if val is not None:
+                    forecast_days[d_str]["hum"] = val
                 
         # 整理成 7 天格式
         results = []

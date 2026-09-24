@@ -1,7 +1,7 @@
 import sqlite3
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +213,7 @@ def insert_air_stations(stations: list[dict]):
     return inserted
 
 def get_air_stations(station_type=None, region=None, include_offline=False):
-    """查詢測站列表，支援站點類型與分區（北部、中部、南部、東部）篩選"""
+    """查詢測站列表，支援站點類型與分區（北部、中部、南部、東部、東北、東南、外島）篩選"""
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -226,19 +226,15 @@ def get_air_stations(station_type=None, region=None, include_offline=False):
         if not include_offline:
             query += " AND status != 'offline'"
             
-        # 若指定特定區域
-        if region and region not in ['All', '全部', '全部地區']:
+        # 若指定特定地區
+        if region:
             query += " AND region = ?"
             params.append(region)
             
-        # 若 station_type 為區域名稱，自動對應到 region
-        if station_type and station_type not in ['All', 'All (全台灣所有站點)']:
-            if station_type in ['北部地區', '中部地區', '南部地區', '東部地區', '外島地區']:
-                query += " AND region = ?"
-                params.append(station_type)
-            else:
-                query += " AND station_type = ?"
-                params.append(station_type)
+        # 若指定特定站點類別
+        if station_type and station_type not in ['All', '全部', '全台']:
+            query += " AND station_type = ?"
+            params.append(station_type)
             
         cursor.execute(query, params)
         rows = [dict(row) for row in cursor.fetchall()]
@@ -246,6 +242,29 @@ def get_air_stations(station_type=None, region=None, include_offline=False):
     except sqlite3.Error as e:
         logger.error(f"查詢站點失敗: {e}")
         return []
+    finally:
+        if conn:
+            conn.close()
+
+def update_station_regions(station_regions: list[tuple[str, str]]):
+    """批次更新既有測站的區域分類，不改動即時數值與更新時間"""
+    if not station_regions:
+        return 0
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.executemany(
+            "UPDATE AirStations SET region = ? WHERE station_id = ? AND region != ?",
+            [(region, station_id, region) for station_id, region in station_regions],
+        )
+        updated = cursor.rowcount
+        conn.commit()
+        return updated
+    except sqlite3.Error as e:
+        logger.error(f"更新測站區域分類失敗: {e}")
+        raise
     finally:
         if conn:
             conn.close()
@@ -306,6 +325,7 @@ def insert_7day_forecasts(forecasts: list[dict]):
         conn.commit()
     except sqlite3.Error as e:
         logger.error(f"儲存一週預報失敗: {e}")
+        raise
     finally:
         if conn:
             conn.close()
@@ -327,6 +347,50 @@ def get_7day_forecasts(station_id: str):
         return rows
     except sqlite3.Error as e:
         logger.error(f"查詢一週預報失敗: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def has_7day_forecasts():
+    """判斷資料庫是否已有任何七日預報快取"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT EXISTS(SELECT 1 FROM SevenDayForecasts)")
+        row = cursor.fetchone()
+        return bool(row and row[0])
+    except sqlite3.Error as e:
+        logger.error(f"檢查七日預報資料失敗: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def get_station_ids_needing_7day_forecasts(station_ids: list[str]):
+    """查詢指定測站中缺少目前七日預報日期的站點 ID"""
+    if not station_ids:
+        return []
+
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT stations.station_id
+            FROM AirStations AS stations
+            LEFT JOIN SevenDayForecasts AS forecasts
+                ON forecasts.station_id = stations.station_id
+            GROUP BY stations.station_id
+            HAVING COUNT(DISTINCT CASE
+                WHEN forecasts.forecast_date >= ? THEN forecasts.forecast_date
+            END) < 7
+        """, (date.today().isoformat(),))
+        requested_ids = set(station_ids)
+        return [row[0] for row in cursor.fetchall() if row[0] in requested_ids]
+    except sqlite3.Error as e:
+        logger.error(f"查詢缺少七日預報的站點失敗: {e}")
         return []
     finally:
         if conn:

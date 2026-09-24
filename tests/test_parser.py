@@ -1,11 +1,88 @@
 import pytest
-from parse_weather import parse_weather_data, normalize_temperature
+from parse_weather import parse_weather_data, normalize_temperature, get_station_region
 
 def test_normalize_temperature():
     assert normalize_temperature("25") == 25.0
     assert normalize_temperature("25.5") == 25.5
     assert normalize_temperature("invalid") is None
     assert normalize_temperature(None) is None
+
+def test_get_station_region_east_coast_subregions():
+    assert get_station_region("宜蘭測站", 24.75, 121.75) == "東北部地區"
+    assert get_station_region("花蓮測站", 23.98, 121.60) == "東部地區"
+    assert get_station_region("臺東測站", 22.76, 121.15) == "東南部地區"
+
+def test_parse_cwa_7day_forecast_for_matching_location():
+    from parse_weather import parse_cwa_7day_forecast
+
+    cwa_data = {
+        "records": {
+            "Locations": [{
+                "LocationsName": "花蓮縣",
+                "Location": [{
+                    "LocationName": "花蓮市",
+                    "WeatherElement": [
+                        {"ElementName": "最高溫度", "Time": [{
+                            "StartTime": "2026-09-24 06:00:00",
+                            "ElementValue": [{"MaxTemperature": "30"}],
+                        }]},
+                        {"ElementName": "最低溫度", "Time": [{
+                            "StartTime": "2026-09-24 06:00:00",
+                            "ElementValue": [{"MinTemperature": "24"}],
+                        }]},
+                        {"ElementName": "平均相對濕度", "Time": [{
+                            "StartTime": "2026-09-24 06:00:00",
+                            "ElementValue": [{"RelativeHumidity": "72"}],
+                        }]},
+                    ],
+                }],
+            }],
+        },
+    }
+
+    rows = parse_cwa_7day_forecast(cwa_data, "HUALIEN_001", "花蓮市測站")
+
+    assert len(rows) == 1
+    assert rows[0]["station_id"] == "HUALIEN_001"
+    assert rows[0]["min_temp"] == 24.0
+    assert rows[0]["max_temp"] == 30.0
+    assert rows[0]["humidity"] == 72.0
+
+def test_parse_cwa_forecast_handles_iso_dates_and_dash_values():
+    from parse_weather import parse_cwa_7day_forecast
+
+    cwa_data = {
+        "records": {
+            "Locations": [{
+                "LocationsName": "臺灣",
+                "Location": [{
+                    "LocationName": "宜蘭市",
+                    "WeatherElement": [
+                        {"ElementName": "最高溫度", "Time": [{
+                            "StartTime": "2026-09-24T06:00:00+08:00",
+                            "ElementValue": [{"MaxTemperature": "-"}],
+                        }]},
+                        {"ElementName": "最低溫度", "Time": [{
+                            "StartTime": "2026-09-24T06:00:00+08:00",
+                            "ElementValue": [{"MinTemperature": "23"}],
+                        }]},
+                        {"ElementName": "12小時降雨機率", "Time": [{
+                            "StartTime": "2026-09-24T06:00:00+08:00",
+                            "ElementValue": [{"ProbabilityOfPrecipitation": "-"}],
+                        }]},
+                    ],
+                }],
+            }],
+        },
+    }
+
+    rows = parse_cwa_7day_forecast(cwa_data, "YILAN_001", "宜蘭市測站")
+
+    assert len(rows) == 1
+    assert rows[0]["forecast_date"] == "2026-09-24"
+    assert rows[0]["min_temp"] == 23.0
+    assert rows[0]["max_temp"] == -999.0
+    assert rows[0]["pop"] == -1
 
 def test_parse_weather_data_valid():
     sample_data = {

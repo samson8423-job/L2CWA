@@ -58,11 +58,11 @@ L2CWA/
 
 ### 為什麼不能直接部署到 GitHub Pages？
 
-GitHub Pages 只提供靜態網站託管，不能執行這個專案所需的 Python、Streamlit 伺服器、SQLite 寫入操作或後端 API 呼叫。因此，Pages **不能直接部署並執行本互動式儀表板**。若只要展示靜態介紹頁或截圖，可另外製作靜態前端；若要讓 Streamlit 網站可互動，請使用下方的 Streamlit Community Cloud 部署方式。
+GitHub Pages 只提供靜態網站託管，不能執行這個專案所需的 Python、Streamlit 伺服器、SQLite 寫入操作或後端 API 呼叫。因此，Pages **不能直接部署並執行本互動式儀表板**。若只要展示靜態介紹頁或截圖，可另外製作靜態前端；若要部署至 Vercel，請參考下方的 Vercel 部署說明與限制。
 
 ### API 金鑰如何保護？
 
-將金鑰放在本機 `.env`，不要寫進 Python 程式或提交至 Git。部署到 Streamlit Community Cloud 時，將金鑰設定在 App 的 **Secrets**，不要公開 `.env`。
+將金鑰放在本機 `.env`，不要寫進 Python 程式或提交至 Git。部署時應設定在主機端的環境變數；若使用 Vercel，API 金鑰必須由伺服器端程式讀取，不可放進公開的前端程式碼。
 
 ## 本機執行方式
 
@@ -135,18 +135,22 @@ GitHub Pages 只提供靜態網站託管，不能執行這個專案所需的 Pyt
 6. 選擇 `main` 分支及 `/docs` 資料夾，按下 **Save**。
 7. 等待 GitHub Pages 部署完成，再從 Pages 設定頁提供的網址檢視靜態網站。
 
-### 若要部署可互動的 Streamlit 儀表板（建議）
+### 部署到 Vercel
 
-1. 將專案推送到 GitHub repository，確認 `.env` 和 SQLite 資料庫沒有被提交。
-2. 登入 [Streamlit Community Cloud](https://share.streamlit.io/) 並連結 GitHub 帳號。
-3. 建立新 App，選擇 repository、分支及 `app.py` 作為主程式。
-4. 部署主機需提供 `CWA_API_KEY` 環境變數。Streamlit Community Cloud 的 **Secrets** 範例格式如下：
+> **重要限制：**目前專案是 Streamlit 應用程式，使用常駐 Streamlit 伺服器、WebSocket 互動與 SQLite 檔案資料庫；Vercel 的部署模型是靜態網站與 Serverless Functions，無法直接以 `streamlit run app.py` 執行目前的互動式儀表板。只把這個 repository 匯入 Vercel 不會得到可正常運作的 Streamlit 網站。
 
-   ```toml
-   CWA_API_KEY = "你的中央氣象署API金鑰"
-   CWA_API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
-   ```
+#### 在 Vercel 發布靜態介紹頁
 
-   **注意：**目前程式透過 `os.getenv()` 讀取環境變數，並未直接讀取 `st.secrets`。若使用 Streamlit Community Cloud，需先在程式中加入 `st.secrets` 讀取支援，或改用能將 Secrets 注入環境變數的 Python 主機。
+若只需要透過 Vercel 展示專案介紹與網站截圖，可發布靜態頁面；此方式不包含即時地圖、站點點選、資料更新或 SQLite 功能。
 
-5. 部署並開啟主機提供的網址。Streamlit Cloud 的本機檔案系統可能在重新部署或休眠後重置；若需要長期持久保存 SQLite 資料，請改用外部資料庫或持久化儲存服務。
+1. 在 repository 建立 `public/index.html`，放入專案介紹及截圖；圖片可複製到 `public/image/demo.png`，並在 HTML 使用相對路徑 `./image/demo.png`。
+2. 將程式碼推送到 GitHub，確認 `.env`、真實 API Key 與 `data/data.db` 均未提交。
+3. 登入 [Vercel](https://vercel.com/)，使用 GitHub 帳號建立新專案並匯入 repository。
+4. 在專案設定中選擇 **Other** 作為 Framework Preset，Build Command 留白，Output Directory 設為 `public`。
+5. 按下 **Deploy**，完成後使用 Vercel 提供的網址查看靜態介紹頁。
+
+#### 若要讓互動儀表板部署在 Vercel
+
+需先將 Streamlit 前端改寫為 Vercel 支援的前端框架（例如 Next.js），再把資料服務改為 Vercel Serverless Functions 或外部 API，並將 SQLite 檔案改成可持久化的外部資料庫。部署時再將 `CWA_API_KEY` 設為 Vercel 專案的 **Environment Variables**，只在伺服器端使用，勿暴露於瀏覽器端。完成上述改寫後，依 Vercel 的 GitHub 匯入流程選擇前端專案並部署。
+
+因此，**目前版本可直接部署到 Vercel 的只有靜態介紹頁**；若要在不改寫 Streamlit 的情況下保留完整互動功能，需使用支援常駐 Streamlit 服務的主機。

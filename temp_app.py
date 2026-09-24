@@ -44,22 +44,6 @@ from database import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==================== Streamlit 頁面配置 (必須最早執行) ====================
-st.set_page_config(
-    page_title="CWA 天氣預報網站",
-    page_icon="☁️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# 【新增】初始化 session_state
-if "_selected_station_id" not in st.session_state:
-    st.session_state["_selected_station_id"] = None
-if "_last_station_map_click_count" not in st.session_state:
-    st.session_state["_last_station_map_click_count"] = None
-if "_initial_page_loaded" not in st.session_state:
-    st.session_state["_initial_page_loaded"] = False
-
 FORECAST_REGION_KEYWORDS = {
     '北部地區': '臺北市',
     '中部地區': '臺中市',
@@ -69,16 +53,6 @@ FORECAST_REGION_KEYWORDS = {
     '東南部地區': '臺東縣',
     '外島地區': '澎湖縣',
 }
-
-# ==================== 資料庫初始化 (使用 Streamlit 快取) ====================
-@st.cache_resource(show_spinner=False)
-def _init_db_cached():
-    """
-    使用 @st.cache_resource 快取資料庫初始化，
-    確保即使多次 rerun 也只初始化一次。
-    """
-    init_db()
-    return True
 
 
 def sync_station_forecasts(stations):
@@ -291,8 +265,15 @@ def create_popup_html(stn, history):
     """
     return html
 
-# ==================== 執行快取的資料庫初始化 ====================
-_init_db_cached()
+# 初始化 SQLite 資料庫
+init_db()
+
+st.set_page_config(
+    page_title="CWA 天氣預報網站",
+    page_icon="☁️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # 注入自定義 CSS 實現 EdiGreen 空氣盒子介面風格
 st.markdown("""
@@ -515,27 +496,6 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"更新失敗: {e}")
 
-# 【關鍵優化】檢查是否是新的點擊行為
-# 在顯示遮罩和構建地圖之前，先用一個隱藏容器快速檢測點擊
-# 這樣可以在遮罩顯示前就立即停止，避免加載指示器閃爍
-hidden_map_container = st.empty()
-initial_map_result = None
-is_new_click_detected = False
-
-# 先建立暫時的地圖（用於檢測點擊），但不顯示給用戶
-with hidden_map_container:
-    # 只在初始加載時或需要檢查的時候才構建地圖
-    # 這裡暫時先 pass，地圖會在下面正式顯示
-    pass
-
-# 檢查是否需要提早停止（點擊時不顯示遮罩）
-if (not is_initial_page_load and 
-    st.session_state.get("_should_skip_mask_on_next_rerun", False)):
-    # 清除標記
-    st.session_state["_should_skip_mask_on_next_rerun"] = False
-    # 後續會直接顯示地圖，不顯示遮罩
-    loading_overlay.empty()
-
 # ==================== 主地圖繪製與資料整合 ====================
 # 地區篩選映射：用戶輸入 -> 數據庫地區值
 region_mapping = {
@@ -551,107 +511,47 @@ region_mapping = {
 
 selected_region = region_mapping.get(station_type_filter)
 
-# 【新增】檢查地區是否改變，如果改變則顯示遮罩
-# 當用戶切換左邊的地區選單時，需要重新繪製地圖，應該顯示遮罩
-if station_type_filter != st.session_state.get("_last_region_filter"):
-    st.session_state["_last_region_filter"] = station_type_filter
-    # 如果之前顯示了初始遮罩，現在需要清除它
-    # 然後顯示新的地區切換遮罩
-    if not is_initial_page_load:  # 只在不是初始加載時
-        loading_overlay.markdown("""
-        <style>
-            .initial-loading-backdrop {
-                position: fixed;
-                inset: 0;
-                z-index: 99999;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                width: 100vw;
-                height: 100vh;
-                background: rgba(15, 23, 42, 0.62);
-                backdrop-filter: blur(3px);
-            }
-            .initial-loading-card {
-                padding: 28px 36px;
-                border-radius: 14px;
-                background: #fff;
-                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
-                text-align: center;
-            }
-            .loading-spinner {
-                margin-bottom: 16px;
-            }
-            .loading-text {
-                font-size: 15px;
-                font-weight: 500;
-                color: #1e293b;
-            }
-        </style>
-        <div class="initial-loading-backdrop">
-            <div class="initial-loading-card">
-                <div class="loading-spinner">
-                    <svg width="40" height="40" viewBox="0 0 40 40" style="animation: spin 1s linear infinite; margin: 0 auto; display: block;">
-                        <circle cx="20" cy="20" r="18" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="28.27 113.1" style="opacity: 0.8;"></circle>
-                    </svg>
-                </div>
-                <p class="loading-text">載入地圖中...</p>
-            </div>
-        </div>
-        <style>
-            @keyframes spin {
-                from { transform: rotate(0deg); }
-                to { transform: rotate(360deg); }
-            }
-        </style>
-        """, unsafe_allow_html=True)
-
 stations = get_air_stations(
     region=selected_region, 
     include_offline=show_offline
 )
-
-# 載入站點歷史數據，用於生成趨勢圖
 station_histories = load_station_histories(
     tuple(str(station['station_id']) for station in stations)
 )
 
-@st.cache_data(ttl=300, show_spinner=False)
-def build_map_with_stations(stations_tuple, carto_key):
-    """
-    緩存地圖構建過程，避免每次 rerun 都重新繪製 458 個標記。
-    stations_tuple: tuple 形式的站點列表（必須是可哈希的）
-    carto_key: CARTO API 金鑰
-    """
-    # 【修復】將 tuple 轉回字典結構，以便訪問 station['pm25'] 等
-    stations = [dict(zip([
-        'station_id', 'name', 'lat', 'lon', 'pm25', 
-        'temperature', 'humidity', 'station_type', 'updated_at'
-    ], stn_data)) for stn_data in stations_tuple]
-    
-    if carto_key:
-        tile_url = f"https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png?key={carto_key}"
-    else:
-        tile_url = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+# 本機可從 .env 讀取；Streamlit Cloud 則從 App Secrets 讀取。
+load_dotenv()
+carto_api_key = os.getenv("CARTO_API_KEY")
+if not carto_api_key:
+    try:
+        carto_api_key = st.secrets.get("CARTO_API_KEY", "")
+    except StreamlitSecretNotFoundError:
+        carto_api_key = ""
+if carto_api_key:
+    tile_url = f"https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png?key={carto_api_key}"
+else:
+    tile_url = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
 
-    # 建立 Folium 地圖
-    m = folium.Map(
-        location=[23.85, 120.95],
-        zoom_start=8,
-        tiles=None,
-        prefer_canvas=True
-    )
+# 建立 Folium 地圖，鎖定台灣全島
+m = folium.Map(
+    location=[23.85, 120.95],
+    zoom_start=8,
+    tiles=None,
+    prefer_canvas=True
+)
 
-    folium.TileLayer(
-        tiles=tile_url,
-        attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        name='Light',
-        subdomains='abcd',
-        max_zoom=19,
-        control=False,
-    ).add_to(m)
+folium.TileLayer(
+    tiles=tile_url,
+    attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    name='Light',
+    subdomains='abcd',
+    max_zoom=19,
+    control=False,
+).add_to(m)
 
-    m.get_root().header.add_child(folium.Element("""
+# streamlit-folium 的地圖顯示在 iframe 中；主頁面的 Streamlit CSS 無法套用進去。
+# 在 Folium 文件本身縮小 attribution，減少遮擋但保留底圖所需的來源資訊。
+m.get_root().header.add_child(folium.Element("""
 <style>
     .leaflet-control-attribution {
         padding: 2px 5px !important;
@@ -668,41 +568,37 @@ def build_map_with_stations(stations_tuple, carto_key):
 </style>
 """))
 
-    type_counts = {
-        "空氣盒子觀測點": 0,
-        "環保署觀測站": 0,
-        "資料異於周圍環境": 0,
-        "機器需檢修": 0,
-        "開放資料觀測站": 0
-    }
+# 統計各類別數量以呈現在右下角圖例
+type_counts = {
+    "空氣盒子觀測點": 0,
+    "環保署觀測站": 0,
+    "資料異於周圍環境": 0,
+    "機器需檢修": 0,
+    "開放資料觀測站": 0
+}
 
-    # 繪製各測站標記（這是最耗時的部分）
-    for stn in stations:
-        pm25 = stn['pm25']
-        color = get_pm25_color(pm25)
-        stype = stn.get('station_type', '空氣盒子觀測點')
-        if stype in type_counts:
-            type_counts[stype] += 1
-            
-        # 簡化版彈窗（無SVG圖表，保持加載速度）
-        simple_popup_html = f"""
-    <div style="font-family: Arial, sans-serif; width: 280px; padding: 8px; color: #333; font-size: 12px;">
-        <div style="color: #0090d0; font-size: 14px; font-weight: bold; margin-bottom: 6px;">{stn['name']}</div>
-        <div style="margin-bottom: 4px;"><b>PM2.5:</b> {pm25} µg/m³</div>
-        <div style="margin-bottom: 4px;"><b>溫度:</b> {stn['temperature']:.1f}°C</div>
-        <div style="margin-bottom: 4px;"><b>濕度:</b> {stn['humidity']:.0f}%</div>
-        <div style="margin-bottom: 4px;"><b>座標:</b> {stn['lat']:.3f}°N / {stn['lon']:.3f}°E</div>
-        <div style="font-size: 11px; color: #888; margin-top: 6px;">更新: {stn['updated_at']}</div>
-    </div>
-    """
-        simple_popup = folium.Popup(simple_popup_html, max_width=300)
+# 繪製各測站標記
+for stn in stations:
+    pm25 = stn['pm25']
+    color = get_pm25_color(pm25)
+    stype = stn.get('station_type', '空氣盒子觀測點')
+    if stype in type_counts:
+        type_counts[stype] += 1
         
-        display_num = int(round(pm25))
-        text_color = '#333' if color in ['#FFFF00', '#00E400', '#FFD700'] else '#fff'
-        
-        # 依站點類別採用不同標記圖示
-        if stn['station_id'] == 'AAA2':
-            red_pin_html = """
+    history = station_histories.get(str(stn['station_id']), [])
+    
+    # 彈出視窗
+    popup_content = create_popup_html(stn, history)
+    iframe = folium.IFrame(popup_content, width=360, height=295)
+    popup = folium.Popup(iframe, max_width=380)
+    
+    display_num = int(round(pm25))
+    text_color = '#333' if color in ['#FFFF00', '#00E400', '#FFD700'] else '#fff'
+    
+    # 依站點類別採用不同標記圖示
+    if stn['station_id'] == 'AAA2':
+        # 截圖中的焦點目標 AAA2：紅色精緻定位圖標
+        red_pin_html = """
         <div style="position: relative; width: 30px; height: 42px; margin-left: -15px; margin-top: -42px;">
             <svg viewBox="0 0 24 36" width="30" height="42" style="filter: drop-shadow(0 2px 5px rgba(0,0,0,0.45));">
                 <path d="M12 0C5.37 0 0 5.37 0 12c0 9 12 24 12 24s12-15 12-24c0-6.63-5.37-12-12-12z" fill="#e53935" stroke="#ffffff" stroke-width="1.8"/>
@@ -711,14 +607,15 @@ def build_map_with_stations(stations_tuple, carto_key):
             </svg>
         </div>
         """
-            folium.Marker(
-                location=[stn['lat'], stn['lon']],
-                popup=simple_popup,
-                tooltip=f"★ {stn['name']} | PM2.5: {pm25} | 溫: {stn['temperature']}°C 濕: {stn['humidity']}%",
-                icon=folium.DivIcon(html=red_pin_html, icon_size=(30, 42), icon_anchor=(15, 42))
-            ).add_to(m)
-        elif stype == '環保署觀測站':
-            diamond_html = f"""
+        folium.Marker(
+            location=[stn['lat'], stn['lon']],
+            popup=popup,
+            tooltip=f"★ {stn['name']} | PM2.5: {pm25} | 溫: {stn['temperature']}°C 濕: {stn['humidity']}%",
+            icon=folium.DivIcon(html=red_pin_html, icon_size=(30, 42), icon_anchor=(15, 42))
+        ).add_to(m)
+    elif stype == '環保署觀測站':
+        # 環保署觀測站：菱形徽章帶 PM2.5 數值
+        diamond_html = f"""
         <div style="
             width: 19px; height: 19px;
             background-color: {color};
@@ -734,14 +631,15 @@ def build_map_with_stations(stations_tuple, carto_key):
             ">{display_num}</div>
         </div>
         """
-            folium.Marker(
-                location=[stn['lat'], stn['lon']],
-                popup=simple_popup,
-                tooltip=f"🏛️ {stn['name']} (環保署) | PM2.5: {pm25}",
-                icon=folium.DivIcon(html=diamond_html, icon_size=(20, 20), icon_anchor=(10, 10))
-            ).add_to(m)
-        elif stype == '機器需檢修':
-            cone_html = f"""
+        folium.Marker(
+            location=[stn['lat'], stn['lon']],
+            popup=popup,
+            tooltip=f"🏛️ {stn['name']} (環保署) | PM2.5: {pm25}",
+            icon=folium.DivIcon(html=diamond_html, icon_size=(20, 20), icon_anchor=(10, 10))
+        ).add_to(m)
+    elif stype == '機器需檢修':
+        # 離線/需檢修：灰色/警示邊框圓形
+        cone_html = f"""
         <div style="
             width: 22px; height: 22px;
             border-radius: 50%;
@@ -755,14 +653,15 @@ def build_map_with_stations(stations_tuple, carto_key):
             {display_num}
         </div>
         """
-            folium.Marker(
-                location=[stn['lat'], stn['lon']],
-                popup=simple_popup,
-                tooltip=f"🚧 {stn['name']} (需檢修) | PM2.5: {pm25}",
-                icon=folium.DivIcon(html=cone_html, icon_size=(22, 22), icon_anchor=(11, 11))
-            ).add_to(m)
-        else:
-            circle_html = f"""
+        folium.Marker(
+            location=[stn['lat'], stn['lon']],
+            popup=popup,
+            tooltip=f"🚧 {stn['name']} (需檢修) | PM2.5: {pm25}",
+            icon=folium.DivIcon(html=cone_html, icon_size=(22, 22), icon_anchor=(11, 11))
+        ).add_to(m)
+    else:
+        # 空氣盒子觀測點與開放觀測站：圓形微粒徽章
+        circle_html = f"""
         <div style="
             width: 22px; height: 22px;
             border-radius: 50%;
@@ -776,38 +675,12 @@ def build_map_with_stations(stations_tuple, carto_key):
             {display_num}
         </div>
         """
-            folium.Marker(
-                location=[stn['lat'], stn['lon']],
-                popup=simple_popup,
-                tooltip=f"{stn['name']} | PM2.5: {pm25} | 溫: {stn['temperature']}°C 濕: {stn['humidity']}%",
-                icon=folium.DivIcon(html=circle_html, icon_size=(22, 22), icon_anchor=(11, 11))
-            ).add_to(m)
-
-    return m, type_counts
-
-# 【優化】呼叫緩存的地圖構建函數
-load_dotenv()
-carto_api_key = os.getenv("CARTO_API_KEY")
-if not carto_api_key:
-    try:
-        carto_api_key = st.secrets.get("CARTO_API_KEY", "")
-    except StreamlitSecretNotFoundError:
-        carto_api_key = ""
-
-# 將 stations 轉成 tuple（以便可被哈希和緩存）
-stations_tuple = tuple((
-    str(s['station_id']),
-    s['name'],
-    float(s['lat']),
-    float(s['lon']),
-    float(s['pm25']),
-    float(s['temperature']),
-    float(s['humidity']),
-    s.get('station_type', '空氣盒子觀測點'),
-    s.get('updated_at', ''),
-) for s in stations)
-
-m, type_counts = build_map_with_stations(stations_tuple, carto_api_key)
+        folium.Marker(
+            location=[stn['lat'], stn['lon']],
+            popup=popup,
+            tooltip=f"{stn['name']} | PM2.5: {pm25} | 溫: {stn['temperature']}°C 濕: {stn['humidity']}%",
+            icon=folium.DivIcon(html=circle_html, icon_size=(22, 22), icon_anchor=(11, 11))
+        ).add_to(m)
 
 # 若啟用風力線，繪製全台及海域動態風向風速流線
 if show_wind:
@@ -900,17 +773,8 @@ map_result = st_folium(
     ],
 )
 
-# 【新增】地圖顯示完成，清除遮罩
-loading_overlay.empty()
-# 標記初始頁面已載入
-st.session_state["_initial_page_loaded"] = True
-
 last_click_count = map_result.get("last_object_clicked_count")
 last_clicked = map_result.get("last_object_clicked")
-
-# 【關鍵改進】在點擊發生時立即停止，避免遮罩顯示
-# 檢測到新的點擊（last_click_count 改變）→ 設置標記 → st.stop()
-# 這樣做的好處：脚本在點擊處理前就停止，不會觸發後續的頁面渲染
 if (
     last_click_count is not None
     and last_click_count != st.session_state.get("_last_station_map_click_count")
@@ -1009,10 +873,7 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
         col_m3.metric("即時溫度", f"{selected_stn['temperature']:.2f} °C")
         col_m4.metric("相對濕度", f"{selected_stn['humidity']:.0f} %")
         
-        # ==================== 改用 Streamlit 圖表 ====================
-        stn_id = str(selected_stn['station_id'])
-        hist = load_station_histories((stn_id,)).get(stn_id, []) if stn_id else []
-        
+        hist = station_histories.get(str(selected_stn['station_id']), [])
         if hist:
             df_hist = pd.DataFrame(hist)
             t_col = 'time' if 'time' in df_hist.columns else 'record_time'
@@ -1027,7 +888,7 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
                 st.area_chart(df_hist.set_index('hour')[['temperature', 'humidity']])
 
         st.markdown("#### 未來 7 日天氣預報")
-        forecasts = load_station_forecasts(stn_id)
+        forecasts = load_station_forecasts(str(selected_stn['station_id']))
         if forecasts:
             forecast_df = pd.DataFrame(forecasts).rename(columns={
                 'forecast_date': '日期',
@@ -1050,7 +911,7 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
                     '日期', '星期', '天氣', '最低溫 (°C)', '最高溫 (°C)',
                     '相對濕度 (%)', '降雨機率 (%)', '天氣描述',
                 ]],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
         else:
@@ -1063,4 +924,3 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
 if is_initial_page_load:
     loading_overlay.empty()
     st.session_state["_initial_page_loaded"] = True
-

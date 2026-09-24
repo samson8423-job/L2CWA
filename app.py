@@ -89,250 +89,6 @@ def load_station_forecasts(station_id):
     """短暫快取單一站點的七日預報，只從資料庫讀取。"""
     return get_7day_forecasts(station_id)
 
-# 初始化 SQLite 資料庫
-init_db()
-
-st.set_page_config(
-    page_title="CWA 天氣預報網站",
-    page_icon="☁️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# 注入自定義 CSS 實現 EdiGreen 空氣盒子介面風格
-st.markdown("""
-<style>
-    /* 調整主要版面邊界，營造滿版地圖體驗 */
-    .block-container {
-        padding-top: 0.8rem;
-        padding-bottom: 0.5rem;
-        padding-left: 1.5rem;
-        padding-right: 1.5rem;
-        max-width: 100% !important;
-    }
-
-    /* 側邊欄樣式調整 */
-    [data-testid="stSidebar"] {
-        background-color: #f7f9fa;
-        border-right: 1px solid #e2e8f0;
-    }
-    
-    /* EdiGreen 側邊欄按鈕風格 */
-    .admin-btn {
-        background: #6c89b7;
-        color: white !important;
-        text-align: center;
-        padding: 8px 12px;
-        border-radius: 4px;
-        font-weight: 500;
-        margin-bottom: 12px;
-        display: block;
-        text-decoration: none;
-        cursor: pointer;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    .admin-btn:hover {
-        background: #5b78a5;
-    }
-    
-    /* 側邊欄標籤文字 */
-    .filter-label {
-        font-size: 13px;
-        font-weight: 600;
-        color: #4a5568;
-        margin-top: 10px;
-        margin-bottom: 4px;
-    }
-    
-    /* 浮動圖例控制項 */
-    .legend-scale-bar {
-        display: inline-flex;
-        align-items: center;
-        background: rgba(255, 255, 255, 0.95);
-        padding: 5px 10px;
-        border-radius: 4px;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
-        font-size: 12px;
-        gap: 3px;
-    }
-    
-    .legend-type-card {
-        background: rgba(255, 255, 255, 0.95);
-        padding: 8px 12px;
-        border-radius: 4px;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
-        font-size: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-    }
-
-    /* 首次載入期間固定顯示遮罩，直到地圖與下方資料都完成渲染 */
-    div[data-testid="stStatusWidget"] {
-        position: fixed !important;
-        inset: 0 !important;
-        z-index: 99999 !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        width: 100vw !important;
-        height: 100vh !important;
-        background: rgba(15, 23, 42, 0.62) !important;
-        backdrop-filter: blur(3px);
-        box-sizing: border-box !important;
-    }
-
-    div[data-testid="stStatusWidget"] > details {
-        padding: 28px 36px !important;
-        border-radius: 14px !important;
-        background: #fff !important;
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.24) !important;
-        color: #2c3e50 !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# 遮罩放在資料讀取與地圖建立之前，首次執行完成後才移除。
-is_initial_page_load = not st.session_state.get("_initial_page_loaded", False)
-loading_overlay = st.empty()
-if is_initial_page_load:
-    loading_overlay.status("頁面載入中，正在準備站點資料與地圖…", expanded=True)
-
-# 資料庫不足時僅於此 session 的首次載入嘗試初始化，避免每次互動 rerun 都呼叫 API。
-existing_stations = get_air_stations(include_offline=True)
-station_bootstrap_key = "_station_bootstrap_attempted"
-if (not existing_stations or len(existing_stations) < 150) and not st.session_state.get(station_bootstrap_key):
-    st.session_state[station_bootstrap_key] = True
-    try:
-        with st.spinner("正在初始化資料，下載全台空氣品質觀測資料…", show_time=True):
-            air_raw = fetch_airbox_data()
-            epa_raw = fetch_epa_data()
-            parsed = parse_airbox_data(air_raw, epa_raw)
-            insert_air_stations(parsed)
-            existing_stations = get_air_stations(include_offline=True)
-    except Exception as e:
-        st.error(f"初始資料取得失敗: {e}")
-        logger.error(f"初始資料取得失敗: {e}")
-
-# 每次啟動時修正舊版快取站點的分區，東北／東南不必等手動同步才出現。
-if existing_stations:
-    station_regions = [
-        (
-            str(station['station_id']),
-            get_station_region(station.get('name', ''), station.get('lat', 0), station.get('lon', 0)),
-        )
-        for station in existing_stations
-    ]
-    update_station_regions(station_regions)
-    existing_stations = get_air_stations(include_offline=True)
-
-    # 快取缺資料時每個 session 僅自動同步一次；正常選站只讀 DB，不觸發 API。
-    missing_forecast_ids = set(get_station_ids_needing_7day_forecasts(
-        [str(station['station_id']) for station in existing_stations]
-    ))
-    forecast_bootstrap_key = "_forecast_bootstrap_attempted_date"
-    today_key = datetime.now().date().isoformat()
-    if missing_forecast_ids and st.session_state.get(forecast_bootstrap_key) != today_key:
-        st.session_state[forecast_bootstrap_key] = today_key
-        try:
-            stations_to_sync = [
-                station for station in existing_stations
-                if str(station['station_id']) in missing_forecast_ids
-            ]
-            forecast_count = sync_station_forecasts(stations_to_sync)
-            if forecast_count == 0:
-                st.warning(
-                    "初次載入未取得七日預報資料。請確認 CWA API Key 與 API 回應；"
-                    "資料不會在每次切換站點時重抓。"
-                )
-        except Exception as e:
-            logger.error(f"初始七日預報同步失敗: {e}")
-            st.warning(f"初次載入七日預報同步失敗：{e}")
-
-# ==================== 側邊欄 (Sidebar) ====================
-with st.sidebar:
-    # 頂部 Logo 與標題
-    st.markdown("""
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
-            <div style="background: #25a374; border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: white; font-size: 22px; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.15);">
-                ☁️
-            </div>
-            <div>
-                <div style="color: #25a374; font-size: 13px; font-weight: bold; line-height: 1;">EdiGreen</div>
-                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">CWA 天氣預報網站</div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # st.markdown('<div class="admin-btn">管理者登入 ▾</div>', unsafe_allow_html=True)
-    
-    # language = st.selectbox("語言設定", ["繁體中文", "English"], label_visibility="collapsed")
-    
-    with st.expander("偵測站點顯示 ▾", expanded=True):
-        st.markdown('<div class="filter-label">懸浮微粒子標準 ⓘ</div>', unsafe_allow_html=True)
-        aqi_std = st.radio("標準", ["TW", "UK AQI"], horizontal=True, label_visibility="collapsed")
-        
-        st.markdown('<div class="filter-label">偵測站點 ⓘ</div>', unsafe_allow_html=True)
-        station_filter_mode = st.radio("站點模式", ["Station", "ADF"], horizontal=True, label_visibility="collapsed")
-        
-        st.markdown('<div class="filter-label">地區選擇 ⓘ</div>', unsafe_allow_html=True)
-        station_type_filter = st.selectbox(
-            "地區", 
-            ["全台", "北部", "中部", "南部", "東部", "東北", "東南", "外島"],
-            label_visibility="collapsed"
-        )
-        
-        col_wind, col_off = st.columns(2)
-        with col_wind:
-            show_wind = st.toggle("風力線 ⓘ", value=False)
-        with col_off:
-            show_offline = st.toggle("顯示離線裝置 ⓘ", value=True)
-            
-    st.markdown("---")
-    if st.button("🔄 更新即時監測資料", use_container_width=True):
-        with st.spinner("正在同步全台空氣盒子與氣象資料..."):
-            try:
-                air_raw = fetch_airbox_data()
-                epa_raw = fetch_epa_data()
-                parsed = parse_airbox_data(air_raw, epa_raw)
-                count = insert_air_stations(parsed)
-                forecast_count = sync_station_forecasts(
-                    get_air_stations(include_offline=True)
-                )
-                load_station_histories.clear()
-                load_station_forecasts.clear()
-                create_popup_html.clear()
-                st.success(
-                    f"成功更新 {count} 個測站即時資訊，並寫入 {forecast_count} 筆七日預報資料。"
-                )
-                if forecast_count == 0:
-                    st.warning("七日預報未取得資料，請確認 CWA_API_KEY 與預報 API 狀態。")
-                st.rerun()
-            except Exception as e:
-                st.error(f"更新失敗: {e}")
-
-# ==================== 主地圖繪製與資料整合 ====================
-# 地區篩選映射：用戶輸入 -> 數據庫地區值
-region_mapping = {
-    "全台": None,  # 全部地區
-    "北部": "北部地區",
-    "中部": "中部地區",
-    "南部": "南部地區",
-    "東部": "東部地區",
-    "東北": "東北部地區",
-    "東南": "東南部地區",
-    "外島": "外島地區"
-}
-
-selected_region = region_mapping.get(station_type_filter)
-
-stations = get_air_stations(
-    region=selected_region, 
-    include_offline=show_offline
-)
-station_histories = load_station_histories(
-    tuple(str(station['station_id']) for station in stations)
-)
 
 # 依 PM2.5 決定標籤顏色 (完美還原 EdiGreen 六級色階)
 def get_pm25_color(val):
@@ -348,6 +104,7 @@ def get_pm25_color(val):
         return "#8F3F97"  # 紫色 250
     else:
         return "#7E0023"  # 褐紅色 >251
+
 
 # 建立 HTML/SVG 時序趨勢圖表，精準還原圖片中的 Popup 視窗
 @st.cache_data(ttl=300, show_spinner=False)
@@ -507,6 +264,260 @@ def create_popup_html(stn, history):
     </div>
     """
     return html
+
+# 初始化 SQLite 資料庫
+init_db()
+
+st.set_page_config(
+    page_title="CWA 天氣預報網站",
+    page_icon="☁️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# 注入自定義 CSS 實現 EdiGreen 空氣盒子介面風格
+st.markdown("""
+<style>
+    /* 調整主要版面邊界，營造滿版地圖體驗 */
+    .block-container {
+        padding-top: 0.8rem;
+        padding-bottom: 0.5rem;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
+        max-width: 100% !important;
+    }
+
+    /* 側邊欄樣式調整 */
+    [data-testid="stSidebar"] {
+        background-color: #f7f9fa;
+        border-right: 1px solid #e2e8f0;
+    }
+    
+    /* EdiGreen 側邊欄按鈕風格 */
+    .admin-btn {
+        background: #6c89b7;
+        color: white !important;
+        text-align: center;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-weight: 500;
+        margin-bottom: 12px;
+        display: block;
+        text-decoration: none;
+        cursor: pointer;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .admin-btn:hover {
+        background: #5b78a5;
+    }
+    
+    /* 側邊欄標籤文字 */
+    .filter-label {
+        font-size: 13px;
+        font-weight: 600;
+        color: #4a5568;
+        margin-top: 10px;
+        margin-bottom: 4px;
+    }
+    
+    /* 浮動圖例控制項 */
+    .legend-scale-bar {
+        display: inline-flex;
+        align-items: center;
+        background: rgba(255, 255, 255, 0.95);
+        padding: 5px 10px;
+        border-radius: 4px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        font-size: 12px;
+        gap: 3px;
+    }
+    
+    .legend-type-card {
+        background: rgba(255, 255, 255, 0.95);
+        padding: 8px 12px;
+        border-radius: 4px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        font-size: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# 遮罩放在資料讀取與地圖建立之前，首次執行完成後才移除。
+is_initial_page_load = not st.session_state.get("_initial_page_loaded", False)
+loading_overlay = st.empty()
+if is_initial_page_load:
+    loading_overlay.markdown("""
+    <style>
+        .initial-loading-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 99999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(15, 23, 42, 0.62);
+            backdrop-filter: blur(3px);
+        }
+        .initial-loading-card {
+            padding: 28px 36px;
+            border-radius: 14px;
+            background: #fff;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.24);
+            color: #2c3e50;
+            font-size: 16px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+    </style>
+    <div class="initial-loading-backdrop">
+        <div class="initial-loading-card">
+            <span>☁️ 頁面載入中，正在準備站點資料與地圖…</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# 資料庫不足時僅於此 session 的首次載入嘗試初始化，避免每次互動 rerun 都呼叫 API。
+existing_stations = get_air_stations(include_offline=True)
+station_bootstrap_key = "_station_bootstrap_attempted"
+if (not existing_stations or len(existing_stations) < 150) and not st.session_state.get(station_bootstrap_key):
+    st.session_state[station_bootstrap_key] = True
+    try:
+        with st.spinner("正在初始化資料，下載全台空氣品質觀測資料…", show_time=True):
+            air_raw = fetch_airbox_data()
+            epa_raw = fetch_epa_data()
+            parsed = parse_airbox_data(air_raw, epa_raw)
+            insert_air_stations(parsed)
+            existing_stations = get_air_stations(include_offline=True)
+    except Exception as e:
+        st.error(f"初始資料取得失敗: {e}")
+        logger.error(f"初始資料取得失敗: {e}")
+
+# 每次啟動時修正舊版快取站點的分區，東北／東南不必等手動同步才出現。
+if existing_stations:
+    station_regions = [
+        (
+            str(station['station_id']),
+            get_station_region(station.get('name', ''), station.get('lat', 0), station.get('lon', 0)),
+        )
+        for station in existing_stations
+    ]
+    update_station_regions(station_regions)
+    existing_stations = get_air_stations(include_offline=True)
+
+    # 快取缺資料時每個 session 僅自動同步一次；正常選站只讀 DB，不觸發 API。
+    missing_forecast_ids = set(get_station_ids_needing_7day_forecasts(
+        [str(station['station_id']) for station in existing_stations]
+    ))
+    forecast_bootstrap_key = "_forecast_bootstrap_attempted_date"
+    today_key = datetime.now().date().isoformat()
+    if missing_forecast_ids and st.session_state.get(forecast_bootstrap_key) != today_key:
+        st.session_state[forecast_bootstrap_key] = today_key
+        try:
+            stations_to_sync = [
+                station for station in existing_stations
+                if str(station['station_id']) in missing_forecast_ids
+            ]
+            forecast_count = sync_station_forecasts(stations_to_sync)
+            if forecast_count == 0:
+                st.warning(
+                    "初次載入未取得七日預報資料。請確認 CWA API Key 與 API 回應；"
+                    "資料不會在每次切換站點時重抓。"
+                )
+        except Exception as e:
+            logger.error(f"初始七日預報同步失敗: {e}")
+            st.warning(f"初次載入七日預報同步失敗：{e}")
+
+# ==================== 側邊欄 (Sidebar) ====================
+with st.sidebar:
+    # 頂部 Logo 與標題
+    st.markdown("""
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+            <div style="background: #25a374; border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: white; font-size: 22px; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.15);">
+                ☁️
+            </div>
+            <div>
+                <div style="color: #25a374; font-size: 13px; font-weight: bold; line-height: 1;">EdiGreen</div>
+                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">CWA 天氣預報網站</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # st.markdown('<div class="admin-btn">管理者登入 ▾</div>', unsafe_allow_html=True)
+    
+    # language = st.selectbox("語言設定", ["繁體中文", "English"], label_visibility="collapsed")
+    
+    with st.expander("偵測站點顯示 ▾", expanded=True):
+        st.markdown('<div class="filter-label">懸浮微粒子標準 ⓘ</div>', unsafe_allow_html=True)
+        aqi_std = st.radio("標準", ["TW", "UK AQI"], horizontal=True, label_visibility="collapsed")
+        
+        st.markdown('<div class="filter-label">偵測站點 ⓘ</div>', unsafe_allow_html=True)
+        station_filter_mode = st.radio("站點模式", ["Station", "ADF"], horizontal=True, label_visibility="collapsed")
+        
+        st.markdown('<div class="filter-label">地區選擇 ⓘ</div>', unsafe_allow_html=True)
+        station_type_filter = st.selectbox(
+            "地區", 
+            ["全台", "北部", "中部", "南部", "東部", "東北", "東南", "外島"],
+            label_visibility="collapsed"
+        )
+        
+        col_wind, col_off = st.columns(2)
+        with col_wind:
+            show_wind = st.toggle("風力線 ⓘ", value=False)
+        with col_off:
+            show_offline = st.toggle("顯示離線裝置 ⓘ", value=True)
+            
+    st.markdown("---")
+    if st.button("🔄 更新即時監測資料", use_container_width=True):
+        with st.spinner("正在同步全台空氣盒子與氣象資料..."):
+            try:
+                air_raw = fetch_airbox_data()
+                epa_raw = fetch_epa_data()
+                parsed = parse_airbox_data(air_raw, epa_raw)
+                count = insert_air_stations(parsed)
+                forecast_count = sync_station_forecasts(
+                    get_air_stations(include_offline=True)
+                )
+                load_station_histories.clear()
+                load_station_forecasts.clear()
+                create_popup_html.clear()
+                st.success(
+                    f"成功更新 {count} 個測站即時資訊，並寫入 {forecast_count} 筆七日預報資料。"
+                )
+                if forecast_count == 0:
+                    st.warning("七日預報未取得資料，請確認 CWA_API_KEY 與預報 API 狀態。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"更新失敗: {e}")
+
+# ==================== 主地圖繪製與資料整合 ====================
+# 地區篩選映射：用戶輸入 -> 數據庫地區值
+region_mapping = {
+    "全台": None,  # 全部地區
+    "北部": "北部地區",
+    "中部": "中部地區",
+    "南部": "南部地區",
+    "東部": "東部地區",
+    "東北": "東北部地區",
+    "東南": "東南部地區",
+    "外島": "外島地區"
+}
+
+selected_region = region_mapping.get(station_type_filter)
+
+stations = get_air_stations(
+    region=selected_region, 
+    include_offline=show_offline
+)
+station_histories = load_station_histories(
+    tuple(str(station['station_id']) for station in stations)
+)
 
 # 本機可從 .env 讀取；Streamlit Cloud 則從 App Secrets 讀取。
 load_dotenv()
@@ -889,16 +900,18 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
                 'pop': '降雨機率 (%)',
                 'description': '天氣描述',
             })
-            for column in ['最低溫 (°C)', '最高溫 (°C)']:
-                forecast_df[column] = forecast_df[column].replace(-999, '—')
-            for column in ['相對濕度 (%)', '降雨機率 (%)']:
-                forecast_df[column] = forecast_df[column].replace(-1, '—')
+            for column in ['最低溫 (°C)', '最高溫 (°C)', '相對濕度 (%)', '降雨機率 (%)']:
+                forecast_df[column] = (
+                    forecast_df[column]
+                    .astype(str)
+                    .replace({'-999': '—', '-999.0': '—', '-1': '—', '-1.0': '—'})
+                )
             st.dataframe(
                 forecast_df[[
                     '日期', '星期', '天氣', '最低溫 (°C)', '最高溫 (°C)',
                     '相對濕度 (%)', '降雨機率 (%)', '天氣描述',
                 ]],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
             )
         else:

@@ -95,8 +95,8 @@ st.markdown("""
         padding-right: 1.5rem;
         max-width: 100% !important;
     }
-    
-    /* 隱藏 Leaflet 預設浮水印文字條 */
+
+    /* 隱藏 Leaflet attribution，恢復原本地圖顯示方式 */
     .leaflet-control-attribution {
         display: none !important;
     }
@@ -490,10 +490,9 @@ def create_popup_html(stn, history):
     """
     return html
 
-# 讀取 CARTO_API_KEY，消除圖磚浮水印
+# 維持原本底圖網址設定，CARTO_API_KEY 為選用。
 load_dotenv()
 carto_api_key = os.getenv("CARTO_API_KEY")
-
 if carto_api_key:
     tile_url = f"https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png?key={carto_api_key}"
 else:
@@ -870,12 +869,3 @@ if is_initial_page_load:
     loading_overlay.empty()
     st.session_state["_initial_page_loaded"] = True
 
-import streamlit as st
-
-# 你的 Streamlit 主要程式碼
-st.title("My Streamlit App")
-st.write("Hello World!")
-
-# 為了符合 Vercel Serverless Function 要求新增 handler
-def handler(request, response):
-    return app

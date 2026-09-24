@@ -869,3 +869,13 @@ with st.expander("📊 站點即時詳細指標、24 小時時序與未來 7 日
 if is_initial_page_load:
     loading_overlay.empty()
     st.session_state["_initial_page_loaded"] = True
+
+import streamlit as st
+
+# 你的 Streamlit 主要程式碼
+st.title("My Streamlit App")
+st.write("Hello World!")
+
+# 為了符合 Vercel Serverless Function 要求新增 handler
+def handler(request, response):
+    return app

@@ -1,8 +1,8 @@
-# Sheng Wang - 空氣品質檢測
+# Sheng Wang - 天氣預報網站
 
 以台灣空氣品質與氣象站點為主題的互動式儀表板。透過地圖瀏覽測站即時 PM2.5、溫度與濕度，點選站點可查看 24 小時趨勢及未來 7 日天氣預報。
 
-![Sheng Wang 空氣品質檢測網站畫面](image/result.png)
+![Sheng Wang 天氣預報網站](image/result.png)
 
 ## 網站功能特色
 

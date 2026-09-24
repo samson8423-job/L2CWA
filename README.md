@@ -2,7 +2,7 @@
 
 以台灣空氣品質與氣象站點為主題的互動式儀表板。透過地圖瀏覽測站即時 PM2.5、溫度與濕度，點選站點可查看 24 小時趨勢及未來 7 日天氣預報。
 
-![Sheng Wang 空氣品質檢測網站畫面](image/demo.png)
+![Sheng Wang 空氣品質檢測網站畫面](image/result.png)
 
 ## 網站功能特色
 
@@ -29,7 +29,7 @@ L2CWA/
 ├── .gitignore                     # 排除密鑰、資料庫與 Python 暫存檔
 ├── README.md                      # 專案說明
 ├── image/
-│   └── demo.png                   # 網站畫面示意圖
+│   └── result.png                   # 網站畫面示意圖
 ├── data/
 │   └── data.db                    # 執行時建立的 SQLite 資料庫（不提交至 Git）
 └── tests/
@@ -128,8 +128,8 @@ GitHub Pages 只提供靜態網站託管，不能執行這個專案所需的 Pyt
 ### 若要發布靜態介紹頁
 
 1. 將專案推送到 GitHub repository，並確認沒有提交 `.env`、真實 API Key 或 `data/data.db`。
-2. 在 repository 新增靜態網站首頁，例如 `docs/index.html`（或 `docs/index.md`），放入專案介紹、`image/demo.png` 截圖及連往實際應用的連結。
-3. 確認圖片相對路徑正確；使用 `docs/` 作為發布來源時，請將圖片放在 `docs/image/demo.png`，或調整首頁圖片連結。
+2. 在 repository 新增靜態網站首頁，例如 `docs/index.html`（或 `docs/index.md`），放入專案介紹、`image/result.png` 截圖及連往實際應用的連結。
+3. 確認圖片相對路徑正確；使用 `docs/` 作為發布來源時，請將圖片放在 `docs/image/result.png`，或調整首頁圖片連結。
 4. 前往 GitHub repository 的 **Settings → Pages**。
 5. 在 **Build and deployment** 中選擇 **Deploy from a branch**。
 6. 選擇 `main` 分支及 `/docs` 資料夾，按下 **Save**。

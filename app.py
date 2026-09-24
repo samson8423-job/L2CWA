@@ -78,7 +78,7 @@ def sync_station_forecasts(stations):
 init_db()
 
 st.set_page_config(
-    page_title="CWA 天氣預報網站",
+    page_title="CWA 天氣預報網站test",
     page_icon="☁️",
     layout="wide",
     initial_sidebar_state="expanded"

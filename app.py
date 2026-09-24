@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
+from streamlit.errors import StreamlitSecretNotFoundError
 import logging
 from datetime import datetime
 import math
@@ -242,7 +243,7 @@ with st.sidebar:
             </div>
             <div>
                 <div style="color: #25a374; font-size: 13px; font-weight: bold; line-height: 1;">EdiGreen</div>
-                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">CWA 天氣預報網站test</div>
+                <div style="color: #2c3e50; font-size: 21px; font-weight: 900; line-height: 1.2;">CWA 天氣預報網站</div>
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -485,9 +486,14 @@ def create_popup_html(stn, history):
     """
     return html
 
-# 維持原本底圖網址設定，CARTO_API_KEY 為選用。
+# 本機可從 .env 讀取；Streamlit Cloud 則從 App Secrets 讀取。
 load_dotenv()
 carto_api_key = os.getenv("CARTO_API_KEY")
+if not carto_api_key:
+    try:
+        carto_api_key = st.secrets.get("CARTO_API_KEY", "")
+    except StreamlitSecretNotFoundError:
+        carto_api_key = ""
 if carto_api_key:
     tile_url = f"https://{{s}}.basemaps.cartocdn.com/light_all/{{z}}/{{x}}/{{y}}{{r}}.png?key={carto_api_key}"
 else:

@@ -46,7 +46,7 @@ L2CWA/
 
 - **CWA（中央氣象署）Open Data**：七日天氣預報；需要在環境變數設定 `CWA_API_KEY`。
 - **LASS AirBox 與 EPA 開放資料**：空氣品質站點資料。這些資料源目前由程式直接抓取，不需要在 README 或程式碼中放置 API 金鑰。
-- **CARTO 底圖**：提供地圖底圖；`CARTO_API_KEY` 為選用設定。
+- **CARTO 底圖**：提供地圖底圖；需設定有效的 `CARTO_API_KEY`，否則圖磚會顯示 CARTO 的「API KEY REQUIRED」浮水印。
 
 ### 點選站點時會重新呼叫 API 嗎？
 
@@ -102,7 +102,7 @@ GitHub Pages 只提供靜態網站託管，不能執行這個專案所需的 Pyt
    ```env
    CWA_API_KEY=你的中央氣象署API金鑰
    CWA_API_URL=https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001
-   # 選用：CARTO_API_KEY=你的CARTO金鑰
+   CARTO_API_KEY=你的CARTO金鑰
    ```
 
    `.env` 已列入 `.gitignore`，請勿提交含有真實金鑰的檔案。
@@ -140,13 +140,14 @@ GitHub Pages 只提供靜態網站託管，不能執行這個專案所需的 Pyt
 1. 將專案推送到 GitHub repository，確認 `.env` 和 SQLite 資料庫沒有被提交。
 2. 登入 [Streamlit Community Cloud](https://share.streamlit.io/) 並連結 GitHub 帳號。
 3. 建立新 App，選擇 repository、分支及 `app.py` 作為主程式。
-4. 部署主機需提供 `CWA_API_KEY` 環境變數。Streamlit Community Cloud 的 **Secrets** 範例格式如下：
+4. 在 Streamlit Community Cloud 的 App **Settings → Secrets** 設定 API 金鑰。Secrets 範例如下：
 
    ```toml
    CWA_API_KEY = "你的中央氣象署API金鑰"
    CWA_API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001"
+   CARTO_API_KEY = "你的CARTO金鑰"
    ```
 
-   **注意：**目前程式透過 `os.getenv()` 讀取環境變數，並未直接讀取 `st.secrets`。若使用 Streamlit Community Cloud，需先在程式中加入 `st.secrets` 讀取支援，或改用能將 Secrets 注入環境變數的 Python 主機。
+   地圖底圖會從 `st.secrets` 讀取 `CARTO_API_KEY`（本機則可放在 `.env`）。若未設定或金鑰無效，CARTO 會在地圖圖磚上顯示 API key 錯誤浮水印。
 
 5. 部署並開啟主機提供的網址。Streamlit Cloud 的本機檔案系統可能在重新部署或休眠後重置；若需要長期持久保存 SQLite 資料，請改用外部資料庫或持久化儲存服務。

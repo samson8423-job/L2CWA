@@ -96,11 +96,6 @@ st.markdown("""
         max-width: 100% !important;
     }
 
-    /* 隱藏 Leaflet attribution，恢復原本地圖顯示方式 */
-    .leaflet-control-attribution {
-        display: none !important;
-    }
-    
     /* 側邊欄樣式調整 */
     [data-testid="stSidebar"] {
         background-color: #f7f9fa;
@@ -508,11 +503,30 @@ m = folium.Map(
 
 folium.TileLayer(
     tiles=tile_url,
-    attr='&copy; <a href="https://carto.com/">CARTO</a>',
+    attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
     name='CartoDB Positron',
     subdomains='abcd',
     max_zoom=19
 ).add_to(m)
+
+# streamlit-folium 的地圖顯示在 iframe 中；主頁面的 Streamlit CSS 無法套用進去。
+# 在 Folium 文件本身縮小 attribution，減少遮擋但保留底圖所需的來源資訊。
+m.get_root().header.add_child(folium.Element("""
+<style>
+    .leaflet-control-attribution {
+        padding: 2px 5px !important;
+        border-radius: 3px 0 0 0;
+        background: rgba(255, 255, 255, 0.68) !important;
+        color: #64748b !important;
+        font-size: 8px !important;
+        line-height: 1.2 !important;
+    }
+    .leaflet-control-attribution a {
+        color: #64748b !important;
+        text-decoration: none !important;
+    }
+</style>
+"""))
 
 # 統計各類別數量以呈現在右下角圖例
 type_counts = {
